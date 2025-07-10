@@ -1,7 +1,6 @@
 import asyncio
 import random
-import json
-import os
+import uuid
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,75 +11,104 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-def load_json(filename, default):
-    if os.path.exists(filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return default
+import requests
 
-def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+BIN_ID = "686fe8f653c4bd1d12bb6418"
+API_KEY = "$2a$10$m5tAtqR6cSmnACZA5ZB1T.TsS0ZqFqR424hVjVxZiARemYfx7PsJ2"
+BASE_URL = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
+HEADERS = {
+    "X-Master-Key": API_KEY,
+    "Content-Type": "application/json"
+}
 
 TOKEN = "7581444201:AAGtmBgB3gMKRSYu4VU-dzN9ak7v6DC2Dt8"
 ADMIN_ID = 1970583799
 MIN_ORDER_QUANTITY = 5 # <-- Minimum Order Quantity
 
+def fetch_data():
+    try:
+        resp = requests.get(BASE_URL, headers=HEADERS)
+        if resp.status_code == 200:
+            return resp.json().get("record", {})
+    except Exception as e:
+        print("Error fetching JSONBin data:", e)
+    return {}
 
-def load_orders():
-    return load_json("orders.json", {})
+def save_data(data):
+    try:
+        resp = requests.put(BASE_URL, headers=HEADERS, json=data)
+        return resp.status_code == 200
+    except Exception as e:
+        print("Error saving JSONBin data:", e)
+    return False
 
-def save_orders(orders):
-    save_json("orders.json", orders)
+def generate_order_id():
+    return "ORD" + uuid.uuid4().hex[:8].upper()
 
-def load_pending():
-    return set(load_json("pending_orders.json", []))
-
-def save_pending(pending):
-    save_json("pending_orders.json", list(pending))
-
-def load_order_map():
-    return load_json("order_map.json", {})
-
-def save_order_map(order_map):
-    save_json("order_map.json", order_map)
-
-def load_products():
-    # If you want dynamic stock saving:
-    return load_json("products.json", {
-        "fb_id": {"name": "New FB ID", "price": 7, "stock": 10},
-        "fb_bm": {"name": "FB BM", "price": 8, "stock": 10},
-        "fb_boost": {"name": "FB Boost"},
-        "insta": {"name": "Insta ID"},
-        "otp_service": {"name": "OTP Service"},
-    })
-
-def save_products(products):
-    save_json("products.json", products)
-
-async def save_all(user_orders, pending_orders, order_id_to_user):
-    save_orders(user_orders)
-    save_pending(pending_orders)
-    save_order_map(order_id_to_user)
+def load_users():
+    try:
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code == 200:
+            return response.json().get("record", {}).get("users", [])
+    except Exception as e:
+        print("Error loading users:", e)
+    return []
 
 
+def save_user(user_id, username, first_name, last_name):
+    try:
+        # Fetch current full data
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
+            print("Error fetching data before saving user")
+            return
+
+        data = response.json().get("record", {})
+        users = data.get("users", [])
+
+        user_str = f"{user_id} | @{username or 'NoUsername'} | {first_name or ''} {last_name or ''}"
+
+        # Prevent duplicate
+        if not any(str(user_id) in u for u in users):
+            users.append(user_str)
+            data["users"] = users
+
+            # Save back entire updated data
+            put_resp = requests.put(BASE_URL, headers=HEADERS, json=data)
+            if put_resp.status_code == 200:
+                print(f"✅ Saved: {user_str}")
+            else:
+                print(f"Failed to save user data, status: {put_resp.status_code}")
+
+    except Exception as e:
+        print("Error saving user:", e)
+
+def fetch_jsonbin_data():
+    try:
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code == 200:
+            return response.json().get('record', {})
+    except Exception as e:
+        print("Error fetching JSONBin data:", e)
+    return {}
+
+def save_jsonbin_data(data):
+    try:
+        response = requests.put(BASE_URL, headers=HEADERS, json=data)
+        return response.status_code == 200
+    except Exception as e:
+        print("Error saving JSONBin data:", e)
+    return False
+
+
+# MAIN START FUNCTION
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     user_id = user.id
 
-    # Save user info to users.txt
-    user_info = f"{user_id} | @{user.username or 'NoUsername'} | {user.first_name or ''} {user.last_name or ''} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    try:
-        with open("users.txt", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        if not any(str(user_id) in line for line in lines):
-            with open("users.txt", "a", encoding="utf-8") as f:
-                f.write(user_info)
-    except FileNotFoundError:
-        with open("users.txt", "a", encoding="utf-8") as f:
-            f.write(user_info)
+    # ✅ Save user to JSONBin.io instead of a text file
+    save_user(user.id, user.username, user.first_name, user.last_name)
 
-    # Continue original logic
     keyboard = [
         [InlineKeyboardButton("🧾 New FB ID", callback_data="fb_id")],
         [InlineKeyboardButton("💼 FB BM", callback_data="fb_bm")],
@@ -119,19 +147,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
+    # Static product definition (replace values as needed)
+    products = {
+        "fb_id": {"name": "New FB ID", "price": 7, "stock": 10},
+        "fb_bm": {"name": "FB BM", "price": 8, "stock": 5},
+        "fb_boost": {"name": "FB Boost"},
+        "insta": {"name": "Insta ID"},
+        "otp_service": {"name": "OTP Service"},
+    }
+
     if data in ["fb_id", "fb_bm"]:
-        products = load_products()
-        orders = load_orders()
         product = products[data]
         stock = product.get("stock", None)
 
+        # Save order info temporarily
         context.user_data["temp_order"] = {
             "product": product["name"],
             "price": product["price"],
             "product_key": data,
         }
 
-        
         stock_msg = f"\n📦 Stock available: {stock}" if stock is not None else ""
         await query.message.reply_text(
             f"✨ You selected {product['name']}.\n💰 Price: {product['price']} Taka per ID.{stock_msg}\n\n🔢 How many IDs would you like to purchase?"
@@ -148,66 +183,64 @@ async def quantity_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
     text = update.message.text.strip()
 
-    # Load products fresh
-    products = load_products()
-
-    # Retrieve temporary order from context.user_data
     temp_order = context.user_data.get("temp_order")
     if not temp_order or "product" not in temp_order:
-        # User hasn't selected product yet
-        return
+        return  # No product selected yet
 
     if not text.isdigit():
-        await update.message.reply_text("Please enter a valid number.")
+        await update.message.reply_text("❌ Please enter a valid number.")
         return
 
     quantity = int(text)
     if quantity < MIN_ORDER_QUANTITY:
-        await update.message.reply_text(f"Minimum order is {MIN_ORDER_QUANTITY} pieces.")
+        await update.message.reply_text(f"⚠️ Minimum order is {MIN_ORDER_QUANTITY} pieces.")
         return
 
+    data = fetch_data()
+    products = data.get("products", {})
+
     product_key = temp_order.get("product_key")
-    if product_key in products and "stock" in products[product_key]:
-        available_stock = products[product_key]["stock"]
-        if quantity > available_stock:
-            await update.message.reply_text(
-                f"❌ Sorry, only {available_stock} {products[product_key]['name']} are available in stock.\nPlease enter a lower quantity."
-            )
-            return
+    product = products.get(product_key)
+    if not product:
+        await update.message.reply_text("❌ Product not found.")
+        return
 
-    total = temp_order["price"] * quantity
-    order_id = f"ORD{random.randint(1000, 9999)}"
+    stock = product.get("stock")
+    if stock is not None and quantity > stock:
+        await update.message.reply_text(
+            f"❌ Only {stock} {product['name']} available.\nPlease enter a lower quantity."
+        )
+        return
 
-    # Update temp_order with quantity, total, and order_id
+    total = product["price"] * quantity
+    order_id = generate_order_id()
+
     temp_order.update({
         "quantity": quantity,
         "total": total,
         "order_id": order_id,
     })
-
-    # Save back to context.user_data
-    context.user_data["temp_order"] = temp_order
+    context.user_data["temp_order"] = temp_order  # save back
 
     payment_instructions = (
-        "💳 Payment Instructions:\n\n"
+        "💳 *Payment Instructions:*\n\n"
         "📱 Send Money via:\n"
-        "Bkash / Nagad / Rocket ➤ 01647253544\n\n"
-        "🧾 Reference:\n"
-        f"Use Order ID: `{order_id}` as reference\n\n"
-        "📸 After Payment:\n"
-        "Send a screenshot of your payment for confirmation."
+        "`Bkash / Nagad / Rocket` ➤ `01647253544`\n\n"
+        "🧾 *Reference:* Use Order ID as reference\n"
+        f"`{order_id}`\n\n"
+        "📸 *After Payment:* Send a screenshot here for confirmation."
     )
 
     await update.message.reply_text(
-        f"Order ID: `{order_id}` (copy on tap)\n"
-        f"Product: {temp_order['product']}\n"
-        f"Quantity: {quantity}\n"
-        f"Total Price: {total} Taka\n\n"
-        + payment_instructions,
+        f"*Order Summary:*\n"
+        f"🆔 Order ID: `{order_id}`\n"
+        f"📦 Product: {product['name']}\n"
+        f"🔢 Quantity: {quantity}\n"
+        f"💰 Total: {total} Taka\n\n" + payment_instructions,
         parse_mode='Markdown'
     )
 
-    print(f"[{datetime.now()}] User {user_id} placed temporary order {order_id} for {quantity} x {temp_order['product']} (Total: {total} Taka).")
+    print(f"[{datetime.now()}] User {user_id} placed temp order {order_id} for {quantity} x {product['name']} (Total: {total} Taka).")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
@@ -219,195 +252,281 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = " ".join(context.args)
 
-    # Read user data from file
+    # Fetch user list from jsonbin
     try:
-        with open("users.txt", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        await update.message.reply_text("❌ No users found.")
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
+            await update.message.reply_text("❌ Failed to fetch user list from database.")
+            return
+        data = response.json()
+        users = data['record'].get('users', [])
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error loading users: {e}")
+        return
+
+    if not users:
+        await update.message.reply_text("❌ No users found in database.")
         return
 
     count = 0
-    for line in lines:
-        parts = line.strip().split("|")
-        if not parts or len(parts) < 1:
-            continue
+    failed = 0
+
+    for line in users:
         try:
-            user_id = int(parts[0].strip())
+            user_id_str = line.split("|")[0].strip()
+            user_id = int(user_id_str)
             await context.bot.send_message(chat_id=user_id, text=message)
             count += 1
-            await asyncio.sleep(0.1)  # small delay to avoid rate limiting
+            await asyncio.sleep(0.1)  # avoid rate limits
         except Exception as e:
-            print(f"Failed to send message to {user_id}: {e}")
+            failed += 1
+            print(f"❌ Failed to send to {user_id_str}: {e}")
 
-    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
+    await update.message.reply_text(
+        f"✅ Broadcast sent to {count} users.\n❌ Failed to send to {failed} users."
+    )
+
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
     photo = update.message.photo[-1]
 
-    # Load persistent data fresh from JSON
-    user_orders = load_json("orders.json", {})
-    pending_orders = set(load_json("pending_orders.json", []))
-    order_id_to_user = load_json("order_map.json", {})
-    products = load_json("products.json", {})  # Assuming you keep products in JSON too; if not, use global products dict.
-
-    # Instead of checking global RAM, check if user has temp order in context.user_data
     temp_order = context.user_data.get("temp_order")
     if not temp_order or "order_id" not in temp_order:
-        await update.message.reply_text("No order found. Please /start and place an order first.")
+        await update.message.reply_text("❌ No order found. Please /start and place an order first.")
         return
 
+    data = fetch_data()
+    orders = data.get("orders", [])
+    products = data.get("products", {})
+
     order_id = temp_order["order_id"]
-    product_key = temp_order.get("product_key", None)
+    product = temp_order.get("product", "N/A")
+    product_key = temp_order.get("product_key")
     quantity = temp_order.get("quantity", 0)
+    total = temp_order.get("total", 0)
 
-    # Add the finalized order permanently to user_orders
-    user_orders[str(user_id)] = temp_order
-
-    # Add to pending orders
-    pending_orders.add(order_id)
-    order_id_to_user[order_id] = user_id
-
-    # Reduce stock if applicable
+    # Decrease stock after payment proof received
     if product_key in products and "stock" in products[product_key]:
         products[product_key]["stock"] -= quantity
         if products[product_key]["stock"] < 0:
-            products[product_key]["stock"] = 0
+            products[product_key]["stock"] = 0  # avoid negative stock
 
-    # Save all updates to JSON files
-    save_json("orders.json", user_orders)
-    save_json("pending_orders.json", list(pending_orders))
-    save_json("order_map.json", order_id_to_user)
-    save_json("products.json", products)  # Save updated stock if products.json used
+    final_order = {
+        "user_id": user_id,
+        "username": update.message.from_user.username or "No Username",
+        "order_id": order_id,
+        "product": product,
+        "product_key": product_key,
+        "quantity": quantity,
+        "total": total,
+        "status": "pending",
+        "timestamp": datetime.now().isoformat(),
+    }
+    orders.append(final_order)
+
+    # Save updated data
+    data["orders"] = orders
+    data["products"] = products
+
+    if save_data(data):
+        print(f"✅ Order saved for user {user_id}: {order_id}")
+    else:
+        await update.message.reply_text("⚠️ Error saving your order. Please contact admin.")
+        return
 
     caption = (
-        f"New payment proof received:\n"
-        f"User: @{update.message.from_user.username or 'No Username'} ({user_id})\n"
-        f"Order ID: `{order_id}`\n"
-        f"Product: {temp_order['product']}\n"
-        f"Quantity: {quantity}\n"
-        f"Total Amount: {temp_order['total']} Taka\n"
-        f"📦 Remaining stock: {products[product_key]['stock'] if product_key in products else 'N/A'}"
+        f"📩 *New Payment Proof Received*\n"
+        f"👤 User: @{final_order['username']} (`{user_id}`)\n"
+        f"🆔 Order ID: `{order_id}`\n"
+        f"📦 Product: {product}\n"
+        f"🔢 Quantity: {quantity}\n"
+        f"💰 Total: {total} Taka"
     )
-
     await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo.file_id, caption=caption, parse_mode='Markdown')
-    await update.message.reply_text("✅ Thanks for the payment proof! Please wait for verification.")
-
-    print(f"[{datetime.now()}] Payment proof received for order {order_id} from user {user_id}.")
-
-    # Optionally clear the temp order in user_data after finalizing
+    await update.message.reply_text("✅ Thanks for the payment proof! Your order is under review.")
     context.user_data.pop("temp_order", None)
 
 async def deliver(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         return
 
-    # Load fresh data from disk
-    user_orders = load_orders()
-    pending_orders = load_pending()
-    order_id_to_user = load_order_map()
+    # Ensure arguments are present
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: /deliver <order_id> <message>")
+        return
+
+    order_id = context.args[0]
+    delivery_msg = " ".join(context.args[1:])
 
     try:
-        order_id = context.args[0]
-        delivery_msg = " ".join(context.args[1:])
-        user_id = order_id_to_user.get(order_id)
+        # Fetch orders from JSONBin
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
+            await update.message.reply_text("❌ Failed to fetch orders from database.")
+            return
 
-        if user_id and str(user_id) in user_orders and user_orders[str(user_id)].get("order_id") == order_id:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"✅ Your order `{order_id}` has been delivered!\n\n{delivery_msg}\n\nThank you for ordering!",
-                parse_mode='Markdown'
-            )
+        data = response.json()
+        orders = data['record'].get('orders', [])
 
-            # Remove order from pending list
-            pending_orders.discard(order_id)
+        # Search for the order
+        order_found = None
+        for order in orders:
+            if order.get("order_id") == order_id:
+                order_found = order
+                break
 
-            # Save updates
-            save_pending(pending_orders)
-
-            await update.message.reply_text(f"✅ Delivered order `{order_id}`", parse_mode='Markdown')
-            print(f"[{datetime.now()}] Admin delivered order {order_id} to user {user_id}.")
-        else:
+        if not order_found:
             await update.message.reply_text("❌ Order ID not found.")
-            print(f"[{datetime.now()}] Admin tried to deliver unknown order ID {order_id}.")
-    except Exception as e:
-        await update.message.reply_text("Usage: /deliver <order_id> <message>")
-        print(f"[{datetime.now()}] Admin failed to deliver due to error: {e}")
+            return
 
+        # Check if already delivered/canceled
+        if order_found.get("status") == "delivered":
+            await update.message.reply_text("⚠️ This order has already been delivered.")
+            return
+        if order_found.get("status") == "canceled":
+            await update.message.reply_text("⚠️ This order has been canceled. Cannot deliver.")
+            return
+
+        # Send delivery message to user
+        user_id = order_found["user_id"]
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"✅ Your order `{order_id}` has been delivered!\n\n"
+                f"{delivery_msg}\n\n"
+                f"Thank you for ordering!"
+            ),
+            parse_mode='Markdown'
+        )
+
+        # Mark as delivered
+        order_found["status"] = "delivered"
+        order_found["delivered_at"] = datetime.now().isoformat()
+
+        # Save back to JSONBin
+        updated_data = data['record']
+        updated_data["orders"] = orders
+
+        put_response = requests.put(BASE_URL, headers=HEADERS, json=updated_data)
+        if put_response.status_code != 200:
+            await update.message.reply_text("⚠️ Delivered but failed to update database.")
+            return
+
+        await update.message.reply_text(f"✅ Order `{order_id}` marked as delivered.", parse_mode='Markdown')
+        print(f"[{datetime.now()}] Admin delivered order {order_id}.")
+
+    except Exception as e:
+        await update.message.reply_text("❌ Something went wrong. Please check your input and try again.")
+        print(f"[{datetime.now()}] Error in deliver(): {e}")
 
 async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         return
 
     try:
-        # Load fresh data from disk
-        pending_orders_set = set(load_json("pending_orders.json", []))
-        order_id_to_user_map = load_json("order_map.json", {})
-        user_orders_map = load_json("orders.json", {})
+        # Fetch orders from JSONBin
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
+            await update.message.reply_text("❌ Failed to load orders from database.")
+            return
 
-        if not pending_orders_set:
-            await update.message.reply_text("❌ No pending orders.")
+        data = response.json()
+        orders = data['record'].get('orders', [])
+
+        # Filter only pending orders
+        pending_orders = [order for order in orders if order.get("status", "pending") == "pending"]
+
+        if not pending_orders:
+            await update.message.reply_text("✅ No pending orders found.")
             print(f"[{datetime.now()}] Admin checked pending orders: none found.")
             return
 
+        print(f"[{datetime.now()}] Admin viewed {len(pending_orders)} pending orders.")
+
+        # Prepare response chunks (within Telegram limit)
         messages = []
         current_msg = "*⏳ Pending Orders:*\n"
 
-        for oid in pending_orders_set:
-            uid = order_id_to_user_map.get(oid, "Unknown")
-            order = user_orders_map.get(str(uid), {})
-
-            line = (
+        for order in pending_orders:
+            order_text = (
                 f"\n━━━━━━━━━━━━━━\n"
-                f"📦 Order ID: `{oid}`\n"
-                f"👤 User ID: `{uid}`\n"
+                f"📦 Order ID: `{order.get('order_id', 'N/A')}`\n"
+                f"👤 User ID: `{order.get('user_id', 'N/A')}`\n"
                 f"🛍 Product: {order.get('product', 'N/A')}\n"
                 f"🔢 Quantity: {order.get('quantity', 'N/A')}\n"
                 f"💰 Total: {order.get('total', 'N/A')} Taka\n"
             )
 
-            if len(current_msg + line) > 3500:
+            if len(current_msg + order_text) > 3500:
                 messages.append(current_msg)
                 current_msg = "*⏳ Continued Pending Orders:*\n"
 
-            current_msg += line
+            current_msg += order_text
 
         messages.append(current_msg)
 
+        # Send the messages
         for msg in messages:
             await update.message.reply_text(msg, parse_mode='Markdown')
-
-        print(f"[{datetime.now()}] Admin viewed {len(pending_orders_set)} pending orders.")
 
     except Exception as e:
         await update.message.reply_text("❌ Error retrieving pending orders.")
         print(f"[{datetime.now()}] Error loading pending orders: {e}")
-
 
 async def orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         return
 
     try:
-        user_orders = load_orders()  # Load latest orders
+        # Load orders from JSONBin.io
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
+            await update.message.reply_text("❌ Failed to fetch orders.")
+            return
 
-        if not user_orders:
+        data = response.json()
+        orders = data['record'].get('orders', [])
+
+        if not orders:
             await update.message.reply_text("❌ No orders found.")
             print(f"[{datetime.now()}] Admin checked all orders: none found.")
             return
 
+        print(f"[{datetime.now()}] Admin is viewing {len(orders)} orders...")
+
         messages = []
         current_msg = "*📦 All Orders:*\n"
 
-        for uid, order in user_orders.items():
+        for order in orders:
+            order_id = order.get('order_id', 'N/A')
+            user_id = order.get('user_id', 'N/A')
+            username = order.get('username', 'NoUsername')
+            product = order.get('product', 'N/A')
+            quantity = order.get('quantity', 'N/A')
+            total = order.get('total', 'N/A')
+            status = order.get('status', 'pending')
+            timestamp = order.get('timestamp', '')
+
+            # Format date
+            if timestamp:
+                try:
+                    dt = datetime.fromisoformat(timestamp)
+                    timestamp_str = dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    timestamp_str = timestamp
+            else:
+                timestamp_str = "N/A"
+
             order_text = (
                 f"\n━━━━━━━━━━━━━━\n"
-                f"📦 Order ID: `{order.get('order_id', 'N/A')}`\n"
-                f"👤 User ID: `{uid}`\n"
-                f"📦 Product: {order.get('product', 'N/A')}\n"
-                f"🔢 Quantity: {order.get('quantity', 'N/A')}\n"
-                f"💰 Total: {order.get('total', 'N/A')} Taka\n"
+                f"🆔 Order ID: `{order_id}`\n"
+                f"👤 User: @{username} (`{user_id}`)\n"
+                f"📦 Product: {product}\n"
+                f"🔢 Quantity: {quantity}\n"
+                f"💰 Total: {total} Taka\n"
+                f"📌 Status: {status.capitalize()}\n"
+                f"🕒 Time: {timestamp_str}\n"
             )
 
             if len(current_msg + order_text) > 3500:
@@ -421,63 +540,83 @@ async def orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for msg in messages:
             await update.message.reply_text(msg, parse_mode='Markdown')
 
-        print(f"[{datetime.now()}] Admin viewed all orders.")
-    
     except Exception as e:
         await update.message.reply_text("❌ Error while retrieving orders.")
         print(f"[{datetime.now()}] Error retrieving orders: {e}")
-
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         return
 
-    # Load latest data
-    user_orders = load_orders()
-    pending_orders = load_pending()
-    order_id_to_user = load_order_map()
-    products = load_products()
-
     try:
+        if not context.args or len(context.args) < 1:
+            await update.message.reply_text("❗ Usage: /cancel <order_id>")
+            return
+
         order_id = context.args[0]
-        user_id = order_id_to_user.get(order_id)
-        user_id_str = str(user_id)
 
-        if user_id and user_id_str in user_orders and user_orders[user_id_str].get("order_id") == order_id:
-            order = user_orders[user_id_str]
-            product_key = order.get("product_key", None)
-            quantity = order.get("quantity", 0)
+        # Fetch data from JSONBin
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
+            await update.message.reply_text("❌ Failed to load order data.")
+            return
 
-            # Restock the product if applicable
-            if product_key in products and "stock" in products[product_key]:
-                products[product_key]["stock"] += quantity
+        data = response.json()
+        orders = data['record'].get('orders', [])
+        products = data['record'].get('products', {})
 
-            # Remove order data
-            user_orders.pop(user_id_str, None)
-            pending_orders.discard(order_id)
-            order_id_to_user.pop(order_id, None)
+        order_found = False
 
-            # Save changes
-            save_orders(user_orders)
-            save_pending(pending_orders)
-            save_order_map(order_id_to_user)
-            save_products(products)
+        for order in orders:
+            if order.get("order_id") == order_id and order.get("status", "pending") == "pending":
+                order_found = True
+                user_id = order.get("user_id", "N/A")
+                username = order.get("username", "NoUsername")
+                product_key = order.get("product_key")
+                quantity = order.get("quantity", 0)
 
-            # Notify both admin and user
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"❌ Your order `{order_id}` has been canceled by admin.",
-                parse_mode='Markdown'
-            )
-            await update.message.reply_text(f"✅ Order `{order_id}` canceled.", parse_mode='Markdown')
+                # Restock product if applicable
+                if product_key and product_key in products and "stock" in products[product_key]:
+                    products[product_key]["stock"] += quantity
 
-            print(f"[{datetime.now()}] Admin canceled order {order_id} for user {user_id}.")
+                # Mark as canceled
+                order["status"] = "canceled"
+                order["canceled_at"] = datetime.now().isoformat()
+
+                # Notify the user
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"❌ Your order `{order_id}` has been *canceled* by admin.",
+                    parse_mode='Markdown'
+                )
+
+                # Confirm to admin
+                await update.message.reply_text(
+                    f"✅ Order `{order_id}` canceled successfully.",
+                    parse_mode='Markdown'
+                )
+                print(f"[{datetime.now()}] Admin canceled order {order_id} (User: @{username}, ID: {user_id}).")
+                break
+
+        if not order_found:
+            await update.message.reply_text("❌ Order not found or already canceled.")
+            return
+
+        # Save updated orders/products
+        save_payload = {
+            "orders": orders,
+            "products": products
+        }
+
+        save_response = requests.put(BASE_URL, headers=HEADERS, json=save_payload)
+        if save_response.status_code != 200:
+            await update.message.reply_text("⚠️ Canceled but failed to update database.")
         else:
-            await update.message.reply_text("❌ Order ID not found.")
-            print(f"[{datetime.now()}] Admin tried to cancel unknown order ID {order_id}.")
+            print(f"[{datetime.now()}] JSONBin updated after canceling order {order_id}.")
+
     except Exception as e:
-        await update.message.reply_text("Usage: /cancel <order_id>")
-        print(f"[{datetime.now()}] Admin failed to cancel due to error: {e}")
+        await update.message.reply_text("❌ An error occurred during cancellation.")
+        print(f"[{datetime.now()}] Error in cancel(): {e}")
 
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -485,34 +624,54 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Load fresh data
-        user_orders = load_orders()
-        pending_orders = load_pending()
-        products = load_products()
+        # Fetch data from JSONBin
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
+            await update.message.reply_text("❌ Failed to load data from database.")
+            return
 
-        total_orders = len(user_orders)
-        pending = len(pending_orders)
-        total_revenue = sum(order.get("total", 0) for order in user_orders.values())
+        data = response.json()
+        orders = data['record'].get('orders', [])
+        products = data['record'].get('products', {})
 
+        # Order statistics
+        total_orders = len(orders)
+        pending_orders = [o for o in orders if o.get("status", "pending") == "pending"]
+        delivered_orders = [o for o in orders if o.get("status") == "delivered"]
+        canceled_orders = [o for o in orders if o.get("status") == "canceled"]
+
+        total_pending = len(pending_orders)
+        total_delivered = len(delivered_orders)
+        total_canceled = len(canceled_orders)
+        total_revenue = sum(o.get("total", 0) for o in delivered_orders)
+
+        # Start message
         msg = (
             f"📊 *Sales Statistics:*\n"
             f"🧾 Total Orders: {total_orders}\n"
-            f"🕒 Pending Orders: {pending}\n"
-            f"💰 Total Revenue: {total_revenue} Taka\n\n"
+            f"🕒 Pending Orders: {total_pending}\n"
+            f"✅ Delivered Orders: {total_delivered}\n"
+            f"❌ Canceled Orders: {total_canceled}\n"
+            f"💰 Total Revenue: {total_revenue:,} Taka\n\n"
             f"📦 *Current Stock Levels:*\n"
         )
 
-        for key, product in products.items():
-            if "stock" in product:
-                msg += f"- {product['name']}: {product['stock']}\n"
+        if products:
+            for key in sorted(products):
+                product = products[key]
+                stock = product.get("stock")
+                name = product.get("name", "Unnamed")
+                if stock is not None:
+                    msg += f"- {name}: {stock} in stock\n"
+        else:
+            msg += "_No product stock data available._"
 
         await update.message.reply_text(msg, parse_mode='Markdown')
-        print(f"[{datetime.now()}] Admin checked sales stats.")
-    
-    except Exception as e:
-        await update.message.reply_text("❌ Failed to load stats.")
-        print(f"[{datetime.now()}] Error while showing stats: {e}")
+        print(f"[{datetime.now()}] Admin viewed sales statistics.")
 
+    except Exception as e:
+        await update.message.reply_text("❌ Failed to retrieve statistics.")
+        print(f"[{datetime.now()}] Error in stats(): {e}")
 
 
 if __name__ == "__main__":
