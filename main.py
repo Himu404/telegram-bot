@@ -351,7 +351,6 @@ async def deliver(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         return
 
-    # Ensure arguments are present
     if len(context.args) < 2:
         await update.message.reply_text("❌ Usage: /deliver <order_id> <message>")
         return
@@ -360,64 +359,54 @@ async def deliver(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delivery_msg = " ".join(context.args[1:])
 
     try:
-        # Fetch orders from JSONBin
+        # Fetch full data from JSONBin
         response = requests.get(BASE_URL, headers=HEADERS)
         if response.status_code != 200:
             await update.message.reply_text("❌ Failed to fetch orders from database.")
             return
 
-        data = response.json()
-        orders = data['record'].get('orders', [])
+        data = response.json().get("record", {})
+        orders = data.get("orders", [])
 
-        # Search for the order
-        order_found = None
-        for order in orders:
-            if order.get("order_id") == order_id:
-                order_found = order
-                break
+        # Find the order by ID
+        order_found = next((o for o in orders if o.get("order_id") == order_id), None)
 
         if not order_found:
             await update.message.reply_text("❌ Order ID not found.")
             return
 
-        # Check if already delivered/canceled
-        if order_found.get("status") == "delivered":
+        status = order_found.get("status", "pending")
+        if status == "delivered":
             await update.message.reply_text("⚠️ This order has already been delivered.")
             return
-        if order_found.get("status") == "canceled":
-            await update.message.reply_text("⚠️ This order has been canceled. Cannot deliver.")
+        elif status == "canceled":
+            await update.message.reply_text("⚠️ This order has been canceled and cannot be delivered.")
             return
 
-        # Send delivery message to user
-        user_id = order_found["user_id"]
+        # Send message to the user
+        user_id = order_found.get("user_id")
         await context.bot.send_message(
             chat_id=user_id,
-            text=(
-                f"✅ Your order `{order_id}` has been delivered!\n\n"
-                f"{delivery_msg}\n\n"
-                f"Thank you for ordering!"
-            ),
+            text=f"✅ Your order `{order_id}` has been delivered!\n\n{delivery_msg}\n\nThank you for ordering!",
             parse_mode='Markdown'
         )
 
-        # Mark as delivered
+        # Update order status
         order_found["status"] = "delivered"
         order_found["delivered_at"] = datetime.now().isoformat()
 
-        # Save back to JSONBin
-        updated_data = data['record']
-        updated_data["orders"] = orders
-
-        put_response = requests.put(BASE_URL, headers=HEADERS, json=updated_data)
-        if put_response.status_code != 200:
-            await update.message.reply_text("⚠️ Delivered but failed to update database.")
+        # Save full updated data
+        data["orders"] = orders
+        save = requests.put(BASE_URL, headers=HEADERS, json=data)
+        if save.status_code != 200:
+            await update.message.reply_text("⚠️ Delivered, but failed to update database.")
             return
 
         await update.message.reply_text(f"✅ Order `{order_id}` marked as delivered.", parse_mode='Markdown')
-        print(f"[{datetime.now()}] Admin delivered order {order_id}.")
+        print(f"[{datetime.now()}] Admin marked order {order_id} as delivered.")
 
     except Exception as e:
-        await update.message.reply_text("❌ Something went wrong. Please check your input and try again.")
+        await update.message.reply_text("❌ An unexpected error occurred while delivering.")
         print(f"[{datetime.now()}] Error in deliver(): {e}")
 
 async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -548,42 +537,43 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         return
 
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text("❗ Usage: /cancel <order_id>")
+        return
+
+    order_id = context.args[0]
+
     try:
-        if not context.args or len(context.args) < 1:
-            await update.message.reply_text("❗ Usage: /cancel <order_id>")
-            return
-
-        order_id = context.args[0]
-
-        # Fetch data from JSONBin
+        # Fetch full data from JSONBin
         response = requests.get(BASE_URL, headers=HEADERS)
         if response.status_code != 200:
             await update.message.reply_text("❌ Failed to load order data.")
             return
 
-        data = response.json()
-        orders = data['record'].get('orders', [])
-        products = data['record'].get('products', {})
-
-        order_found = False
+        data = response.json().get('record', {})
+        orders = data.get('orders', [])
+        products = data.get('products', {})
 
         for order in orders:
-            if order.get("order_id") == order_id and order.get("status", "pending") == "pending":
-                order_found = True
-                user_id = order.get("user_id", "N/A")
+            if order.get("order_id") == order_id:
+                if order.get("status") != "pending":
+                    await update.message.reply_text("⚠️ This order is not pending and cannot be canceled.")
+                    return
+
+                user_id = order.get("user_id")
                 username = order.get("username", "NoUsername")
                 product_key = order.get("product_key")
                 quantity = order.get("quantity", 0)
 
-                # Restock product if applicable
-                if product_key and product_key in products and "stock" in products[product_key]:
+                # Restock product if it has stock
+                if product_key in products and "stock" in products[product_key]:
                     products[product_key]["stock"] += quantity
 
-                # Mark as canceled
+                # Update order status
                 order["status"] = "canceled"
                 order["canceled_at"] = datetime.now().isoformat()
 
-                # Notify the user
+                # Notify user
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=f"❌ Your order `{order_id}` has been *canceled* by admin.",
@@ -592,32 +582,28 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # Confirm to admin
                 await update.message.reply_text(
-                    f"✅ Order `{order_id}` canceled successfully.",
+                    f"✅ Order `{order_id}` has been canceled and stock updated.",
                     parse_mode='Markdown'
                 )
-                print(f"[{datetime.now()}] Admin canceled order {order_id} (User: @{username}, ID: {user_id}).")
-                break
 
-        if not order_found:
-            await update.message.reply_text("❌ Order not found or already canceled.")
-            return
+                # Save back full updated data
+                data["orders"] = orders
+                data["products"] = products
+                save = requests.put(BASE_URL, headers=HEADERS, json=data)
 
-        # Save updated orders/products
-        save_payload = {
-            "orders": orders,
-            "products": products
-        }
+                if save.status_code != 200:
+                    await update.message.reply_text("⚠️ Canceled but failed to update JSONBin.")
+                else:
+                    print(f"[{datetime.now()}] Order {order_id} canceled by admin (@{username}, ID: {user_id})")
 
-        save_response = requests.put(BASE_URL, headers=HEADERS, json=save_payload)
-        if save_response.status_code != 200:
-            await update.message.reply_text("⚠️ Canceled but failed to update database.")
-        else:
-            print(f"[{datetime.now()}] JSONBin updated after canceling order {order_id}.")
+                return  # Exit after successful cancel
+
+        # If not found
+        await update.message.reply_text("❌ Order ID not found or already canceled.")
 
     except Exception as e:
         await update.message.reply_text("❌ An error occurred during cancellation.")
         print(f"[{datetime.now()}] Error in cancel(): {e}")
-
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
