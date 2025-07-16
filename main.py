@@ -145,39 +145,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    data = query.data
+    data_key = query.data
 
-    # Static product definition (replace values as needed)
-    products = {
-        "fb_id": {"name": "New FB ID", "price": 7, "stock": 10},
-        "fb_bm": {"name": "FB BM", "price": 8, "stock": 5},
-        "fb_boost": {"name": "FB Boost"},
-        "insta": {"name": "Insta ID"},
-        "otp_service": {"name": "OTP Service"},
-    }
+    # ✅ Fetch dynamic product data from JSONBin
+    data = fetch_data()
+    products = data.get("products", {})
 
-    if data in ["fb_id", "fb_bm"]:
-        product = products[data]
-        stock = product.get("stock", None)
+    if data_key in products:
+        product = products[data_key]
+        product_name = product.get("name", "Unnamed")
+        price = product.get("price", 0)
+        stock = product.get("stock")
 
-        # Save order info temporarily
+        # Save temporary order info in user context
         context.user_data["temp_order"] = {
-            "product": product["name"],
-            "price": product["price"],
-            "product_key": data,
+            "product": product_name,
+            "price": price,
+            "product_key": data_key,
         }
 
         stock_msg = f"\n📦 Stock available: {stock}" if stock is not None else ""
         await query.message.reply_text(
-            f"✨ You selected {product['name']}.\n💰 Price: {product['price']} Taka per ID.{stock_msg}\n\n🔢 How many IDs would you like to purchase?"
+            f"✨ You selected {product_name}.\n💰 Price: {price} Taka per ID.{stock_msg}\n\n🔢 How many IDs would you like to purchase?"
         )
-        print(f"[{datetime.now()}] User {user_id} selected product '{product['name']}'.")
-    else:
-        await query.message.reply_text(
-            f"✅ Yes, {products[data]['name']} is available.\nবিস্তারিত জানার জন্য যোগাযোগ করুন @Himu404 এর সাথে।"
-        )
-        print(f"[{datetime.now()}] User {user_id} checked availability of '{products[data]['name']}'.")
+        print(f"[{datetime.now()}] User {user_id} selected product '{product_name}'.")
 
+    else:
+        # If product is static fallback or non-priced
+        static_names = {
+            "fb_boost": "FB Boost",
+            "insta": "Insta ID",
+            "otp_service": "OTP Service"
+        }
+        name = static_names.get(data_key, "Unknown Product")
+        await query.message.reply_text(
+            f"✅ Yes, {name} is available.\nবিস্তারিত জানার জন্য যোগাযোগ করুন @Himu404 এর সাথে।"
+        )
+        print(f"[{datetime.now()}] User {user_id} checked availability of '{name}'.")
 
 async def quantity_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat_id
